@@ -18,6 +18,8 @@ Failures are reported for the job by default. A job with a thousand tasks that f
 
 Nobody is told about a decision they made themselves.
 
+A decision is reported to the approvers the request named when it opened, the people who were asked, not to whoever approves for the queue by the time it is decided. That is intended. If you change a queue's approvers while a request is waiting, the people you removed still hear how it was decided, and the people you added are not told about requests that were already waiting.
+
 ## How it works
 
 ```mermaid
@@ -48,12 +50,19 @@ EventBridge delivers each event at least once, so the same event can arrive twic
 - **Nothing accepts inbound requests.** There is no function URL, no API, and no load balancer. The function is invoked only by the stack's EventBridge rules, and the jest tests assert that.
 - **No message can approve anything.** Messages carry no approve or reject buttons and no one-click links. The only link in a message is to the job or step page in Deadline Cloud monitor, where the person signs in, reviews the step, and records their decision. A forwarded or leaked message grants nothing.
 - **Messages say little.** By default a message says what happened and links to monitor, plus the job, step, or task ID. Job and step names are included only when you set `MessageDetail` to `NAMES`, since names can reveal confidential projects. An approval's message and links are never included, because they are free text and arbitrary URLs written by whoever submitted the job. Reviewers see them in monitor after signing in.
+- **Names are text, never links or mentions.** Whoever submits a job chooses its job and step names, so with `NAMES` a name could try to pass off a phishing link or ping a whole channel from a sender people trust. Names are escaped for each channel: HTML-escaped in the HTML part of an email, with `&`, `<`, and `>` escaped and every value in a code span for Slack, whose text objects are also `verbatim` so Slack doesn't link-ify them, and Markdown-escaped for Amazon Chime. A name can't add lines to a message, and a zero-width space after each dot, `://`, and `@` stops email, Slack, and Chime clients from turning a URL, domain, email address, or mention such as `@here` or `@All` in it into a link or a notification. The name still reads the same. The monitor link is the only link in a message.
 - **Webhook URLs are secrets.** A Slack or Chime webhook URL is all anyone needs to post to the channel, so each one is kept in AWS Secrets Manager. The preferences table holds only the secret's ARN, and the function's environment holds neither. The function can read only secrets under the stack's `WebhookSecretPrefix`, and posts only to `hooks.slack.com`, `hooks.slack-gov.com`, and `hooks.chime.aws`, over HTTPS, without following redirects.
-- **Events cannot be forged.** The rules match the `aws.deadline` source, which only Deadline Cloud can publish to. Nobody in the account can call `events:PutEvents` to make the stack send messages.
-- **Least privilege.** The function may call `deadline:GetJob` and `deadline:GetStep` on jobs, `identitystore:DescribeUser` and `identitystore:ListGroupMemberships` in the configured identity store, `dynamodb:GetItem` on the preferences table, write the delivery table, `secretsmanager:GetSecretValue` under the webhook prefix, and `ses:SendEmail` only from the configured sender address.
+- **Events cannot be forged.** By default the rules match exactly one source, `aws.deadline`, which only Deadline Cloud can publish to. Nobody in the account can call `events:PutEvents` to make the stack send messages. The function trusts the recipients an approval event names, so this matters: an event with a custom source, which anyone allowed `events:PutEvents` on the default event bus can publish, could send an approval request to anyone it names. Only add a custom source for testing, to a stack in a development account, as described in [Test a deployment](#test-a-deployment).
+- **Least privilege.** The function may call `deadline:GetJob` on jobs, `identitystore:DescribeUser` and `identitystore:ListGroupMemberships` in the configured identity store, `dynamodb:GetItem` on the preferences table, write the delivery table, `secretsmanager:GetSecretValue` under the webhook prefix, and `ses:SendEmail` only from the configured sender address. It may call `deadline:GetStep` only when `MessageDetail` is `NAMES`, through an IAM policy the stack creates only then, since a step's details include its approval message and links. With the default `MINIMAL`, the function reads a job only to find who submitted it, and never reads a step.
 - **Logs hold no secrets.** Logs never contain a webhook URL, and email addresses are masked, such as `a***@example.com`.
 
 Anyone who can write the preferences table can redirect another person's notifications, so treat it as administrator-only, like the rest of the stack.
+
+### IAM principals and session names
+
+A job submitted with IAM credentials records the caller's ARN in `createdBy`, and preferences for an IAM principal are matched on that exact ARN. For an assumed role, the ARN ends in the role session name, `arn:aws:sts::111122223333:assumed-role/<role>/<session name>`, and whoever assumes the role chooses the session name. Anyone else who can assume the same role can use the same session name, and their jobs' notifications then go to the email address or channel in that principal's preferences.
+
+So use IAM Identity Center identities for people. A job submitted by someone signed in to Deadline Cloud monitor records their Identity Center user ID, which they can't choose, and the function looks up their email address in the identity store. Set preferences on IAM principals only for service or team identities, such as the role a render pipeline submits with, sending to a team mailbox or channel that everyone who can assume the role is entitled to read.
 
 ## Email: why Amazon SES
 
@@ -106,7 +115,7 @@ When the deployment finishes, it prints these outputs:
 | `IdentityStoreId` | empty | Your IAM Identity Center identity store. Empty means approvers are looked up in the store their approval event names, and a failed job's submitter is reached only through preferences |
 | `IdentityStoreRegion` | this stack's Region | The Region of your IAM Identity Center instance, if different |
 | `FailureNotificationLevel` | `JOB` | `JOB`, `STEP`, `TASK`, or `NONE` |
-| `MessageDetail` | `MINIMAL` | `NAMES` adds job and step names to messages |
+| `MessageDetail` | `MINIMAL` | `NAMES` adds job and step names to messages, and allows the function `deadline:GetStep` to read step names |
 | `ApprovalLinkTarget` | `STEP_PAGE` | `APPROVAL_PAGE` links approval messages to monitor's approval review page, for a monitor version that has one |
 | `NotifyApproversOfDecision` | `false` | Whether approvers are told about decisions as well as the submitter |
 
@@ -126,7 +135,9 @@ npm run preferences -- set user:alex --mute TASK_FAILED
 # Approvals for the Lighting Leads group also go to the team's channel.
 npm run preferences -- webhook group:"Lighting Leads" SLACK
 
-# The render pipeline's role submits jobs too. Email its owners when they fail.
+# The render pipeline's role submits jobs too. Email its team when they fail.
+# Key IAM preferences only on service or team identities like this one: see
+# "IAM principals and session names" above.
 npm run preferences -- set arn:aws:sts::111122223333:assumed-role/RenderPipeline/submitter \
   --email pipeline-team@studio.example.com
 
@@ -153,7 +164,11 @@ With `ApprovalLinkTarget` set to `APPROVAL_PAGE`, approval messages link to the 
 
 ## Test a deployment
 
-Deadline Cloud events cannot be published by hand, because EventBridge reserves `aws.` sources for AWS services. To test end to end, deploy a separate copy of the stack that also matches a custom source, then publish events with that source:
+Deadline Cloud events cannot be published by hand, because EventBridge reserves `aws.` sources for AWS services. To test end to end, deploy a separate copy of the stack that also matches a custom source, then publish events with that source.
+
+> [!WARNING]
+> Only add a custom event source to a stack in a development account, never to a stack in an account people rely on for real notifications. Anyone allowed to call `events:PutEvents` on the account's default event bus can publish an event with a custom source, and the function trusts the recipients the event names. They could, for example, send "Step waiting for your approval" messages to any approver they choose. `cdk synth` and `cdk deploy` print a warning when the rules match a source that doesn't start with `aws.`. Delete the test stack when you are done.
+
 
 ```bash
 npx cdk deploy NotificationsTest -c stackName=NotificationsTest \
@@ -167,7 +182,9 @@ aws events put-events --entries '[{
 }]'
 ```
 
-Use the IDs of a real job, since the function reads its submitter. Then check the function's log group for the `Event processed` line. Don't add a custom source to the stack you rely on: anyone allowed to call `events:PutEvents` on the default event bus could then make it send messages.
+Use the IDs of a real job, since the function reads its submitter. Then check the function's log group for the `Event processed` line.
+
+Pass `eventSources` on the command line, as above, rather than setting it in `cdk.json` or `cdk.context.json`, where it would apply to every deployment of the app. Without it, the rules match `aws.deadline` and nothing else.
 
 A third context value, `deadlineEndpointUrl`, points `GetJob` at another Deadline Cloud API endpoint.
 

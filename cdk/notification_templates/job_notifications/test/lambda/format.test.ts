@@ -3,7 +3,13 @@
 // Message content per channel: what it says, what it links to, and what it
 // must never contain.
 
-import { composeMessage, formatChime, formatEmail, formatSlack } from '../../lambda/format';
+import {
+  composeMessage,
+  displayName,
+  formatChime,
+  formatEmail,
+  formatSlack,
+} from '../../lambda/format';
 import { monitorLink } from '../../lambda/links';
 import { Notification, NOTIFICATION_KINDS, NotificationKind } from '../../lambda/types';
 import { FARM_ID, JOB_ID, MONITOR_URL, QUEUE_ID, REGION, STEP_ID, urlsIn } from './fakes';
@@ -101,23 +107,117 @@ describe('composeMessage', () => {
   });
 });
 
-describe('escaping names', () => {
-  const hostile = notification('JOB_FAILED', {
-    jobName: '<script>alert(1)</script> & <https://evil.example|click>',
-    stepName: '"quoted"',
+describe('hostile job and step names', () => {
+  /** Names a submitter could give a job or step to phish or ping its recipients. */
+  const HOSTILE = {
+    html: '<script>alert(1)</script><a href="https://evil.example/login">"fix it"</a>',
+    slackLink: '<https://evil.example/login|Re-run the job>',
+    slackMentions: '<!channel> <!here> <@U012AB3CD> @here',
+    slackCodeBreakout: 'Render` <https://evil.example|approve> `x',
+    markdown: '[Approve here](https://evil.example) ![x](https://evil.example/p.png) **urgent**',
+    chimeMentions: '@All @Present',
+    bareUrl: 'see https://evil.example/login or www.evil.example or evil.example',
+    email: 'mail it-support@evil.example',
+    newlines: 'Render\n\nApprove here: evil.example\r\nThanks',
+    bidi: 'shot_042\u202Egnp.exe\u2066',
+    lookalikeDots: 'evil\u3002example and evil\uFF0Eexample',
+  };
+
+  function hostile(name: string): Notification {
+    return notification('APPROVAL_REQUESTED', { jobName: name, stepName: name });
+  }
+
+  function slackTexts(n: Notification): string[] {
+    const slack = formatSlack(composeMessage(n)) as {
+      text: string;
+      blocks: { text?: { text: string }; elements?: { text: string }[] }[];
+    };
+    return [
+      slack.text,
+      ...slack.blocks.flatMap((block) => [
+        ...(block.text ? [block.text.text] : []),
+        ...(block.elements ?? []).map((element) => element.text),
+      ]),
+    ];
+  }
+
+  test.each(Object.entries(HOSTILE))('%s: links only to monitor, on every channel', (_, name) => {
+    for (const part of rendered(hostile(name))) {
+      for (const url of urlsIn(part)) {
+        expect(url.replace(/&amp;/g, '&')).toBe(LINK);
+      }
+      // No client can recognize the attacker's domain, email address, or a
+      // mention, since a zero-width space breaks each of them up.
+      expect(part).not.toMatch(/evil[.\u3002\uFF0E]example/);
+      expect(part).not.toMatch(/@(All|Present|here|channel)\b/);
+      expect(part).not.toMatch(/[\u202A-\u202E\u2066-\u2069]/);
+    }
+  });
+
+  test('names stay on one line, so they cannot add lines to a message', () => {
+    const n = hostile(HOSTILE.newlines);
+    const { text } = formatEmail(composeMessage(n));
+    expect(text).not.toMatch(/^Approve here/m);
+    expect(text).toContain('Job: Render Approve here: evil.\u200Bexample Thanks');
+    for (const part of slackTexts(n)) {
+      expect(part).not.toContain('Approve here:\n');
+    }
   });
 
   test('HTML email escapes names', () => {
-    const { html } = formatEmail(composeMessage(hostile));
+    const { html } = formatEmail(composeMessage(hostile(HOSTILE.html)));
     expect(html).not.toContain('<script>');
     expect(html).toContain('&lt;script&gt;');
-    expect(html).toContain('&quot;quoted&quot;');
+    expect(html).toContain('&lt;a href=&quot;https:\u200B//evil.\u200Bexample/login&quot;&gt;');
+    expect(html.match(/<a /g)).toHaveLength(1);
+  });
+
+  test('the plain-text email part shows names as typed, apart from the link breaks', () => {
+    const { text } = formatEmail(composeMessage(hostile(HOSTILE.html)));
+    expect(text).toContain(
+      'Job: <script>alert(1)</script><a href="https:\u200B//evil.\u200Bexample/login">',
+    );
   });
 
   test('Slack escapes names so they cannot form links or mentions', () => {
-    const slack = JSON.stringify(formatSlack(composeMessage(hostile)));
-    expect(slack).not.toContain('<https://evil.example|click>');
-    expect(slack).toContain('&lt;https://evil.example|click&gt;');
+    for (const name of [HOSTILE.slackLink, HOSTILE.slackMentions, HOSTILE.slackCodeBreakout]) {
+      const texts = slackTexts(hostile(name));
+      const context = texts[texts.length - 1];
+      // The only `<...>` left is the monitor link.
+      expect(texts.join('\n').match(/<[^>]*>/g)).toEqual([
+        `<${LINK}|Review in Deadline Cloud monitor>`,
+      ]);
+      expect(context).toContain('&lt;');
+      // Job, Step, Job ID, and Step ID are one code span each: a backtick in a
+      // name cannot end its span early.
+      expect(context.match(/`/g)).toHaveLength(2 * 4);
+    }
+  });
+
+  test('Slack does not preprocess the text for links or mentions', () => {
+    const slack = formatSlack(composeMessage(hostile(HOSTILE.bareUrl))) as {
+      blocks: { text?: { verbatim?: boolean }; elements?: { verbatim?: boolean }[] }[];
+    };
+    const textObjects = slack.blocks.flatMap((block) => [
+      ...(block.text ? [block.text] : []),
+      ...(block.elements ?? []),
+    ]);
+    expect(textObjects.length).toBeGreaterThan(0);
+    for (const text of textObjects) expect(text.verbatim).toBe(true);
+  });
+
+  test('Chime renders Markdown, with names escaped so they cannot form links or images', () => {
+    const { Content } = formatChime(composeMessage(hostile(HOSTILE.markdown))) as {
+      Content: string;
+    };
+    expect(Content.startsWith('/md ')).toBe(true);
+    // The only Markdown link is the monitor link.
+    expect(Content.match(/(?<!\\)\[[^\]]*(?<!\\)\]\(/g)).toEqual([
+      '[Review in Deadline Cloud monitor](',
+    ]);
+    expect(Content).toContain('\\[Approve here\\]\\(https:\u200B//evil.\u200Bexample\\)');
+    expect(Content).toContain('\\*\\*urgent\\*\\*');
+    expect(Content).not.toMatch(/(?<!\\)!\[/);
   });
 });
 
@@ -130,9 +230,25 @@ describe('formatSlack', () => {
 });
 
 describe('formatChime', () => {
-  test('is a single Content string with the link', () => {
+  test('is a single Markdown Content string with the link', () => {
     const chime = formatChime(composeMessage(notification('JOB_FAILED')));
     expect(Object.keys(chime)).toEqual(['Content']);
-    expect(chime.Content).toContain(LINK);
+    expect(chime.Content).toContain(`[Open in Deadline Cloud monitor](${LINK})`);
+    expect(chime.Content).toContain('**\\[Deadline Cloud\\] Job failed**');
+  });
+});
+
+describe('displayName', () => {
+  test('leaves ordinary names readable', () => {
+    expect(displayName('shot_042_lighting_v3')).toBe('shot_042_lighting_v3');
+    expect(displayName('  Render   comp ')).toBe('Render comp');
+    expect(displayName('scene.ma')).toBe('scene.\u200Bma');
+  });
+
+  test('treats a name with nothing visible as no name', () => {
+    expect(displayName(undefined)).toBeUndefined();
+    expect(displayName('\u202E\u200B \n')).toBeUndefined();
+    const { details } = composeMessage(notification('JOB_FAILED', { jobName: '\u2066\u2069' }));
+    expect(details.map(([label]) => label)).not.toContain('Job');
   });
 });

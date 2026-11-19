@@ -188,6 +188,7 @@ export class FakeJobs implements JobDirectory {
   readonly getJobCalls: ResourceIds[] = [];
   readonly getStepCalls: ResourceIds[] = [];
   failWith?: Error;
+  stepFailWith?: Error;
 
   constructor(
     public createdBy = ALEX,
@@ -203,6 +204,7 @@ export class FakeJobs implements JobDirectory {
 
   async getStepName(ids: ResourceIds): Promise<string | undefined> {
     this.getStepCalls.push(ids);
+    if (this.stepFailWith) throw this.stepFailWith;
     return this.stepName;
   }
 }

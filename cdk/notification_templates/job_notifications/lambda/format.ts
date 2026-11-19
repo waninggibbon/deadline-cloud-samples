@@ -11,6 +11,13 @@
 // No message carries an action. There are no approve or reject buttons and no
 // one-click links: an approval is recorded on the monitor page, by someone
 // signed in to it, so a forwarded or leaked message cannot approve anything.
+//
+// Job and step names are written by whoever submits the job, so they are
+// treated as hostile. `displayName` makes a name inert on every channel: it
+// cannot add lines to the message, and clients do not turn anything in it into
+// a link or a mention. Each formatter then escapes every value for its own
+// markup: HTML for an email's HTML part, mrkdwn for Slack, and Markdown for
+// Amazon Chime. An email's plain-text part has no markup to escape.
 
 import { Notification } from './types';
 
@@ -27,6 +34,35 @@ export interface Message {
 const FOOTER =
   'You received this because of your AWS Deadline Cloud notification preferences. ' +
   'Ask your Deadline Cloud administrator to change them.';
+
+const ZERO_WIDTH_SPACE = '\u200B';
+
+/**
+ * A job or step name, made safe to show in any message.
+ *
+ * Line breaks and other control characters become spaces, so a name cannot
+ * add lines to a message, and invisible formatting characters, such as
+ * bidirectional overrides, are removed, so it cannot reorder the text around
+ * it. Then a zero-width space goes after each character that lets a client
+ * recognize a link or a mention: the dots of a domain name, the colon of
+ * `https://`, and the `@` of an email address or of a mention such as `@here`
+ * or `@All`. The name reads the same, but `https://example.com/login` in it is
+ * no longer a link and `@All` no longer notifies a whole chat room.
+ */
+export function displayName(name: string | undefined): string | undefined {
+  if (name === undefined) return undefined;
+  const text = name
+    .replace(/[\p{Cc}\p{Zl}\p{Zp}]/gu, ' ')
+    .replace(/\p{Cf}/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    // Full stops, including the ideographic and fullwidth ones that browsers
+    // also accept in domain names.
+    .replace(/[.\u3002\uFF0E\uFF61](?=\S)/gu, `$&${ZERO_WIDTH_SPACE}`)
+    .replace(/:(?=[/\\])/g, `:${ZERO_WIDTH_SPACE}`)
+    .replace(/[@\uFF20]/gu, `$&${ZERO_WIDTH_SPACE}`);
+  return text === '' ? undefined : text;
+}
 
 export function composeMessage(notification: Notification): Message {
   const { kind, ids, decision } = notification;
@@ -73,8 +109,10 @@ export function composeMessage(notification: Notification): Message {
   }
 
   const details: [string, string][] = [];
-  if (notification.jobName) details.push(['Job', notification.jobName]);
-  if (notification.stepName) details.push(['Step', notification.stepName]);
+  const jobName = displayName(notification.jobName);
+  const stepName = displayName(notification.stepName);
+  if (jobName) details.push(['Job', jobName]);
+  if (stepName) details.push(['Step', stepName]);
   details.push(['Job ID', ids.jobId]);
   if (ids.stepId) details.push(['Step ID', ids.stepId]);
   if (ids.taskId) details.push(['Task ID', ids.taskId]);
@@ -130,22 +168,36 @@ export function formatEmail(message: Message): EmailContent {
   return { subject: message.subject, text, html };
 }
 
-/** Slack's mrkdwn treats these three characters as control characters. */
+/**
+ * Slack mrkdwn's control characters are `&`, `<`, and `>`. Escaping them is
+ * what stops a value forming a `<https://...|link>`, a `<@U123>` user mention,
+ * or a `<!here>` or `<!channel>` mention.
+ */
 function escapeSlack(value: string): string {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 /**
+ * A value as a Slack code span, in which `*`, `_`, and `~` are literal and URLs
+ * are not linked. A backtick would end the span early, so it is replaced.
+ */
+function slackCode(value: string): string {
+  return `\`${escapeSlack(value.replace(/`/g, "'"))}\``;
+}
+
+/**
  * A Slack incoming webhook payload: text blocks only, with no buttons or other
  * interactive elements, and link unfurling off so Slack does not try to fetch
- * the monitor page.
+ * the monitor page. Every text object is `verbatim`, so Slack does not turn
+ * URLs, channel names, or mentions in it into links; the monitor link is the
+ * only link, written out explicitly.
  */
 export function formatSlack(message: Message): Record<string, unknown> {
   const details = message.details
-    .map(([label, value]) => `${escapeSlack(label)}: \`${escapeSlack(value)}\``)
+    .map(([label, value]) => `${escapeSlack(label)}: ${slackCode(value)}`)
     .join('  |  ');
   return {
-    text: `${message.subject}: ${message.summary}`,
+    text: `${escapeSlack(message.subject)}: ${escapeSlack(message.summary)}`,
     unfurl_links: false,
     unfurl_media: false,
     blocks: [
@@ -153,23 +205,40 @@ export function formatSlack(message: Message): Record<string, unknown> {
         type: 'section',
         text: {
           type: 'mrkdwn',
+          verbatim: true,
           text:
             `*${escapeSlack(message.subject)}*\n${escapeSlack(message.summary)}\n` +
             `<${message.link}|${escapeSlack(message.linkText)}>`,
         },
       },
-      { type: 'context', elements: [{ type: 'mrkdwn', text: details }] },
+      { type: 'context', elements: [{ type: 'mrkdwn', verbatim: true, text: details }] },
     ],
   };
 }
 
-/** An Amazon Chime incoming webhook payload, as plain text. */
+/**
+ * Backslash-escape the characters that start Markdown links, images, emphasis,
+ * code, tables, and raw HTML, so a value is shown as typed.
+ */
+function escapeMarkdown(value: string): string {
+  return value.replace(/[\\`*_~[\]()<>|!#&]/g, '\\$&');
+}
+
+/**
+ * An Amazon Chime incoming webhook payload. A `/md` prefix makes Chime render
+ * the content as Markdown, so how it is shown does not depend on what the
+ * values in it look like, and every value is escaped for it.
+ */
 export function formatChime(message: Message): Record<string, unknown> {
-  const lines = [
-    message.subject,
-    message.summary,
-    `${message.linkText}: ${message.link}`,
-    message.details.map(([label, value]) => `${label}: ${value}`).join(', '),
+  // Parentheses would end the link's destination early.
+  const link = message.link.replace(/\(/g, '%28').replace(/\)/g, '%29');
+  const paragraphs = [
+    `**${escapeMarkdown(message.subject)}**`,
+    escapeMarkdown(message.summary),
+    `[${escapeMarkdown(message.linkText)}](${link})`,
+    message.details
+      .map(([label, value]) => `${escapeMarkdown(label)}: ${escapeMarkdown(value)}`)
+      .join(', '),
   ];
-  return { Content: lines.join('\n') };
+  return { Content: `/md ${paragraphs.join('\n\n')}` };
 }

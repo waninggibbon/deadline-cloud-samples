@@ -195,6 +195,54 @@ describe('message detail', () => {
     expect(text).toContain('Step: Render');
     expect(deps.jobs.getJobCalls).toHaveLength(1);
   });
+
+  test('NAMES still sends the message when the step cannot be read', async () => {
+    const deps = fakes();
+    deps.jobs.stepFailWith = new PermanentError('denied', 'AccessDeniedException');
+    const summary = await handleEvent(stepFailedEvent(), config({ messageDetail: 'NAMES' }), deps);
+
+    const { text } = deps.transport.emails[0].content;
+    expect(text).toContain('Job: shot_042_lighting_v3');
+    expect(text).not.toContain('Step:');
+    expect(summary.outcomes.SENT).toBe(1);
+    expect(deps.log.entries).toContainEqual(
+      expect.objectContaining({
+        level: 'WARN',
+        fields: expect.objectContaining({ reason: 'AccessDeniedException' }),
+      }),
+    );
+  });
+
+  test('NAMES retries when reading the step fails transiently', async () => {
+    const deps = fakes();
+    deps.jobs.stepFailWith = Object.assign(new Error('slow down'), { name: 'ThrottlingException' });
+    await expect(
+      handleEvent(stepFailedEvent(), config({ messageDetail: 'NAMES' }), deps),
+    ).rejects.toThrow('slow down');
+    expect(deps.transport.emails).toEqual([]);
+  });
+
+  test('a hostile job name reaches no channel as a link or a mention', async () => {
+    const deps = fakes();
+    deps.jobs.name = '<!here> Approve at <https://evil.example/approve|monitor> @All';
+    deps.preferences.set(ALEX, {
+      channels: ['EMAIL', 'SLACK'],
+      slackWebhookSecretArn: secretArn('alex-slack'),
+    });
+    deps.transport.secrets.set(secretArn('alex-slack'), SLACK_URL);
+    await handleEvent(stepFailedEvent(), config({ messageDetail: 'NAMES' }), deps);
+
+    const slack = JSON.stringify(deps.transport.webhooks[0].payload);
+    expect(slack).not.toContain('<!here>');
+    expect(slack).not.toContain('<https://evil');
+    expect(slack).toContain('&lt;!here&gt;');
+    const { html, text } = deps.transport.emails[0].content;
+    expect(html).not.toContain('<https://evil');
+    for (const part of [slack, html, text]) {
+      expect(part).not.toContain('https://evil.example');
+      expect(part).not.toContain('@All');
+    }
+  });
 });
 
 describe('EventBridge redelivery', () => {

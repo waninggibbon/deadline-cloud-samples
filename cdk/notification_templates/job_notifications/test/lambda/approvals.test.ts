@@ -142,7 +142,9 @@ describe('Step Approval Requested', () => {
   test('NAMES reads the job and step names; MINIMAL never does', async () => {
     const minimal = fakes();
     await handleEvent(approvalRequestedEvent([approver('USER', SAM)]), config(), minimal);
+    expect(minimal.jobs.getJobCalls).toEqual([]);
     expect(minimal.jobs.getStepCalls).toEqual([]);
+    expect(minimal.transport.emails[0].content.text).not.toContain('Step:');
 
     const named = fakes();
     await handleEvent(

@@ -4,7 +4,7 @@
 // listens for, what its function may do, and what it must never expose.
 
 import * as cdk from 'aws-cdk-lib';
-import { Match, Template } from 'aws-cdk-lib/assertions';
+import { Annotations, Match, Template } from 'aws-cdk-lib/assertions';
 
 import { JobNotificationsStack, JobNotificationsStackProps } from '../lib/job-notifications-stack';
 
@@ -125,10 +125,22 @@ describe('event rules', () => {
   });
 
   test('match the sources a test deployment names', () => {
-    const template = synth({ eventSources: ['aws.deadline-test', 'test.deadline'] });
+    const template = synth({ eventSources: ['aws.deadline', 'custom.deadline-test'] });
     for (const rule of Object.values(template.findResources('AWS::Events::Rule'))) {
-      expect(rule.Properties.EventPattern.source).toEqual(['aws.deadline-test', 'test.deadline']);
+      expect(rule.Properties.EventPattern.source).toEqual(['aws.deadline', 'custom.deadline-test']);
     }
+  });
+
+  test('warn about a source anyone in the account could publish, and only then', () => {
+    const warnings = (props: JobNotificationsStackProps) => {
+      const app = new cdk.App({ context: { 'aws:cdk:bundling-stacks': [] } });
+      const stack = new JobNotificationsStack(app, 'Notifications', { env: ENV, ...props });
+      return Annotations.fromStack(stack).findWarning('*', Match.stringLikeRegexp('PutEvents'));
+    };
+    expect(warnings({})).toEqual([]);
+    const [warning] = warnings({ eventSources: ['aws.deadline', 'custom.deadline-test'] });
+    expect(warning.entry.data).toContain('custom.deadline-test');
+    expect(warning.entry.data).toContain('development account');
   });
 
   test('match only FAILED status changes', () => {
@@ -184,9 +196,35 @@ describe('function permissions', () => {
 
   test('read jobs, and nothing else in Deadline Cloud', () => {
     const deadline = statements.filter((s) => actions(s).some((a) => a.startsWith('deadline:')));
-    expect(deadline).toHaveLength(1);
-    expect(actions(deadline[0]).sort()).toEqual(['deadline:GetJob', 'deadline:GetStep']);
-    expect(JSON.stringify(deadline[0].Resource)).toContain(':farm/*/queue/*/job/*');
+    expect(deadline.flatMap(actions).sort()).toEqual(['deadline:GetJob', 'deadline:GetStep']);
+    for (const statement of deadline) {
+      expect(JSON.stringify(statement.Resource)).toContain(':farm/*/queue/*/job/*');
+    }
+  });
+
+  test('read steps only when MessageDetail includes names', () => {
+    const policies = Object.values(template.findResources('AWS::IAM::Policy'));
+    const withGetStep = policies.filter((policy) =>
+      (policy.Properties.PolicyDocument.Statement as Statement[]).some((s) =>
+        actions(s).includes('deadline:GetStep'),
+      ),
+    );
+    expect(withGetStep).toHaveLength(1);
+    const [stepPolicy] = withGetStep;
+    expect(stepPolicy.Condition).toBe('MessagesIncludeNames');
+    expect(stepPolicy.Properties.PolicyDocument.Statement.flatMap(actions)).toEqual([
+      'deadline:GetStep',
+    ]);
+    expect(template.toJSON().Conditions.MessagesIncludeNames).toEqual({
+      'Fn::Equals': [{ Ref: 'MessageDetail' }, 'NAMES'],
+    });
+
+    // Everything else the function needs, GetJob included, is unconditional.
+    for (const policy of policies.filter((policy) => policy !== stepPolicy)) {
+      expect(policy.Condition).toBeUndefined();
+    }
+    const getJob = statements.find((s) => actions(s).includes('deadline:GetJob'))!;
+    expect(actions(getJob)).toEqual(['deadline:GetJob']);
   });
 
   test('read secrets under the webhook prefix only', () => {

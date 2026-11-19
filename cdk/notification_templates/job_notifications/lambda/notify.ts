@@ -73,6 +73,30 @@ async function audienceFor(
   }
 }
 
+/**
+ * The step's name for a MessageDetail=NAMES message. The name is only extra
+ * detail, so a step that cannot be read sends the message without it rather
+ * than dropping it. That covers the moment after MessageDetail changes to
+ * NAMES, before the function's permission to call GetStep is in place.
+ */
+async function readStepName(
+  ids: ResourceIds,
+  deps: Dependencies,
+  base: { eventId: string; detailType: string },
+): Promise<string | undefined> {
+  try {
+    return await deps.jobs.getStepName(ids);
+  } catch (error) {
+    if (!isPermanent(error)) throw error;
+    deps.log.warn('Could not read the step name; sending without it', {
+      ...base,
+      ...ids,
+      reason: error.code,
+    });
+    return undefined;
+  }
+}
+
 export async function handleEvent(
   event: DeadlineEvent,
   config: Config,
@@ -107,6 +131,7 @@ export async function handleEvent(
 
   // The job is read at most once, and only when something needs it: the
   // submitter for a failure or decision, or the names for MessageDetail=NAMES.
+  // The step is read only for its name, so never under MINIMAL.
   let job: Promise<{ createdBy: string; name?: string }> | undefined;
   const getJob = () => (job ??= deps.jobs.getJob(ids));
 
@@ -119,7 +144,7 @@ export async function handleEvent(
     );
     if (config.messageDetail === 'NAMES') {
       jobName = (await getJob()).name;
-      stepName = ids.stepId ? await deps.jobs.getStepName(ids) : undefined;
+      stepName = ids.stepId ? await readStepName(ids, deps, base) : undefined;
     }
   } catch (error) {
     if (isPermanent(error)) {

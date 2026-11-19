@@ -26,10 +26,11 @@ export interface JobNotificationsStackProps extends cdk.StackProps {
    *
    * Deadline Cloud publishes as `aws.deadline`. Only AWS services can publish
    * events with an `aws.` source, so with the default no principal in the
-   * account can forge an event that makes this stack send messages. Add another
-   * source only for a test deployment, since anyone allowed to call
-   * `events:PutEvents` on the default event bus could then trigger
-   * notifications.
+   * account can forge an event that makes this stack send messages. Add a
+   * custom source only for a test deployment in a development account: anyone
+   * allowed to call `events:PutEvents` on the default event bus could then
+   * publish events that name the recipients themselves, such as an approval
+   * request to arbitrary approvers. Synthesizing a stack with one warns.
    *
    * @default ['aws.deadline']
    */
@@ -75,6 +76,15 @@ export class JobNotificationsStack extends cdk.Stack {
     const eventSources = props.eventSources ?? ['aws.deadline'];
     if (eventSources.length === 0) {
       throw new Error('eventSources must name at least one EventBridge source.');
+    }
+    const forgeableSources = eventSources.filter((source) => !source.startsWith('aws.'));
+    if (forgeableSources.length > 0) {
+      cdk.Annotations.of(this).addWarningV2(
+        'deadline-cloud-samples:JobNotificationsStack.forgeableEventSource',
+        `The rules match ${forgeableSources.join(', ')}, which anyone allowed to call ` +
+          'events:PutEvents on the default event bus can publish, choosing who is notified ' +
+          'and of what. Deploy a stack with such a source only in a development account.',
+      );
     }
 
     // ----------------------------------------------------------------- Inputs
@@ -258,17 +268,37 @@ export class JobNotificationsStack extends cdk.Stack {
       'dynamodb:DeleteItem',
     );
 
+    // Deadline Cloud authorizes GetJob and GetStep against the job.
+    const jobs = this.formatArn({
+      service: 'deadline',
+      resource: 'farm',
+      resourceName: '*/queue/*/job/*',
+    });
     this.function.addToRolePolicy(
       new iam.PolicyStatement({
         sid: 'ReadJobs',
-        // GetJob for the submitter; GetStep only when MessageDetail is NAMES.
-        // Deadline Cloud authorizes both against the job.
-        actions: ['deadline:GetJob', 'deadline:GetStep'],
-        resources: [
-          this.formatArn({ service: 'deadline', resource: 'farm', resourceName: '*/queue/*/job/*' }),
-        ],
+        // The submitter, from createdBy, and with MessageDetail=NAMES, the job's name.
+        actions: ['deadline:GetJob'],
+        resources: [jobs],
       }),
     );
+    // GetStep is needed only for the step's name, and its response also holds
+    // the step's approval message and links. So it is granted by a separate
+    // policy that the stack creates only when MessageDetail is NAMES.
+    const messagesIncludeNames = new cdk.CfnCondition(this, 'MessagesIncludeNames', {
+      expression: cdk.Fn.conditionEquals(messageDetail.valueAsString, 'NAMES'),
+    });
+    const readStepNames = new iam.Policy(this, 'ReadStepNamesPolicy', {
+      roles: [this.function.role!],
+      statements: [
+        new iam.PolicyStatement({
+          sid: 'ReadStepNames',
+          actions: ['deadline:GetStep'],
+          resources: [jobs],
+        }),
+      ],
+    });
+    (readStepNames.node.defaultChild as iam.CfnPolicy).cfnOptions.condition = messagesIncludeNames;
 
     // With an IdentityStoreId, only that store. Without one, whichever store an
     // approval event names, which in practice is the account's one Identity
