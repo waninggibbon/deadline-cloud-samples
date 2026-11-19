@@ -13,6 +13,8 @@ This table covers every immediate deployable sample directory in `notification_t
 | [Budget event notifications](budget_events_notification/) | Sending Deadline Cloud budget threshold events through SNS and AWS Chatbot | You need email or Slack budget alerts |
 | [Job event Slack notifications](job_events_slack_lambda/) | Matching job events in EventBridge and invoking a Slack-posting Lambda | You need an example service-event integration for job completion or failure |
 
+To send failures and step approvals to the individual people involved, with per-person channels and preferences, see the [AWS CDK job notifications](../../cdk/notification_templates/job_notifications/) sample.
+
 ## Setup
 
 Each sample README documents its parameters and integration-specific setup. In general:

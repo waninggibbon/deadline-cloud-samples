@@ -43,7 +43,7 @@ or run licensed software; review parameters, IAM permissions, licensing, and cle
 |---|---|
 | [CloudFormation](cloudformation/) | Deploy starter farms, fleet support, storage, capacity automation, and notifications. |
 | [Terraform](terraform/) | Deploy a starter farm with Terraform. |
-| [AWS CDK](cdk/) | Deploy a starter farm with the AWS CDK in TypeScript. |
+| [AWS CDK](cdk/) | Deploy a starter farm and per-person job notifications with the AWS CDK in TypeScript. |
 | [Job bundles](job_bundles/) | Define OpenJD rendering, simulation, ML, scientific, and utility jobs. |
 | [Conda recipes](conda_recipes/) | Build applications, adaptors, renderers, and plugins into versioned packages. |
 | [Containers](containers/) | Build worker-compatible or application container images. |

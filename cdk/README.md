@@ -1,14 +1,15 @@
 # AWS Deadline Cloud sample AWS CDK apps
 
-With the [AWS Cloud Development Kit](https://aws.amazon.com/cdk/), you can define Deadline Cloud infrastructure in a general-purpose programming language and synthesize it to CloudFormation. These apps are written in TypeScript and use the `aws-cdk-lib/aws-deadline` constructs.
+With the [AWS Cloud Development Kit](https://aws.amazon.com/cdk/), you can define Deadline Cloud infrastructure in a general-purpose programming language and synthesize it to CloudFormation. These apps are written in TypeScript. The farm templates use the `aws-cdk-lib/aws-deadline` constructs.
 
 ## Sample index
 
-This table covers every immediate sample directory below `cdk/farm_templates/`.
+This table covers every immediate sample directory below `cdk/farm_templates/` and `cdk/notification_templates/`.
 
 | Sample | What it demonstrates | Start here when |
 |---|---|---|
 | [Farm templates](farm_templates/starter_farm/) | Example farms assembled from reusable `Farm`, `Queue`, and fleet constructs, from a single-fleet starting point up to farms specialized for package building or GPU work | Your team writes infrastructure in TypeScript and wants unit tests over the synthesized template |
+| [Job notifications](notification_templates/job_notifications/) | Routing job failure and step approval events to the job's submitter and the step's approvers, by email, Slack, or Amazon Chime, with per-person preferences and links into Deadline Cloud monitor | People should hear about their own failed jobs, or about steps waiting for their approval, rather than one channel hearing about everything |
 
 These farms run rendering, reconstruction, and data-transformation jobs from the [job bundle index](../job_bundles/). They mirror the [CloudFormation farm templates](../cloudformation/farm_templates/) and include support for [building custom Conda packages](../conda_recipes/).
 
