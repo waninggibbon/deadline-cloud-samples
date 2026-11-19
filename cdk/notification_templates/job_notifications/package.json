@@ -1,0 +1,43 @@
+{
+  "name": "deadline-cloud-job-notifications-cdk",
+  "version": "1.0.0",
+  "description": "AWS CDK app that delivers AWS Deadline Cloud job failure and step approval notifications by email, Slack, and Amazon Chime",
+  "license": "MIT-0",
+  "private": true,
+  "bin": {
+    "job-notifications": "bin/job-notifications.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "test": "jest",
+    "cdk": "cdk",
+    "synth": "cdk synth",
+    "deploy": "cdk deploy",
+    "destroy": "cdk destroy",
+    "preferences": "tsx scripts/preferences.ts"
+  },
+  "devDependencies": {
+    "@swc/core": "^1.16.21",
+    "@swc/jest": "^0.2.39",
+    "@types/aws-lambda": "^8.10.164",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^26.6.6",
+    "aws-cdk": "^2.1148.1",
+    "esbuild": "^0.28.2",
+    "jest": "^30.5.2",
+    "tsx": "^4.23.15",
+    "typescript": "~7.0.2"
+  },
+  "dependencies": {
+    "@aws-sdk/client-cloudformation": "^3.1172.0",
+    "@aws-sdk/client-deadline": "^3.1172.0",
+    "@aws-sdk/client-dynamodb": "^3.1172.0",
+    "@aws-sdk/client-identitystore": "^3.1172.0",
+    "@aws-sdk/client-secrets-manager": "^3.1172.0",
+    "@aws-sdk/client-sesv2": "^3.1172.0",
+    "@aws-sdk/lib-dynamodb": "^3.1172.0",
+    "aws-cdk-lib": "^2.277.0",
+    "constructs": "^10.8.1"
+  }
+}
