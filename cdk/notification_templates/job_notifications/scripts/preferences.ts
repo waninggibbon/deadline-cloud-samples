@@ -248,19 +248,26 @@ async function main(): Promise<void> {
         if ((error as Error).name !== 'ResourceExistsException') throw error;
         ({ ARN: arn } = await secrets.send(new PutSecretValueCommand({ SecretId: name, SecretString: url })));
       }
+      // Turn the channel on as well, keeping whatever channels were already on.
+      // With none set, that is the default: email for a person, nothing for a group.
+      const { Item } = await documents.send(new GetCommand({ TableName: stack.tableName, Key: key }));
+      const current: string[] = Item?.channels ?? (principalArg.startsWith('group:') ? [] : ['EMAIL']);
+      const channels = [...new Set([...current, channel])];
       const attribute = channel === 'SLACK' ? 'slackWebhookSecretArn' : 'chimeWebhookSecretArn';
       await documents.send(
         new UpdateCommand({
           TableName: stack.tableName,
           Key: key,
-          UpdateExpression: `SET ${attribute} = :arn, updatedAt = :updatedAt`,
-          ExpressionAttributeValues: { ':arn': arn, ':updatedAt': new Date().toISOString() },
+          UpdateExpression: `SET ${attribute} = :arn, channels = :channels, updatedAt = :updatedAt`,
+          ExpressionAttributeValues: {
+            ':arn': arn,
+            ':channels': channels,
+            ':updatedAt': new Date().toISOString(),
+          },
         }),
       );
       console.log(
-        `Stored the ${channel} webhook for ${principalId} in ${name}. If ${channel} is not among ` +
-          `its channels yet, add it with: npm run preferences -- --stack ${values.stack} ` +
-          `set ${principalArg} --channels EMAIL,${channel}`,
+        `Stored the ${channel} webhook for ${principalId} in ${name}. Its channels are now ${channels.join(', ')}.`,
       );
       return;
     }

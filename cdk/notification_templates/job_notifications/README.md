@@ -115,16 +115,16 @@ When the deployment finishes, it prints these outputs:
 Nobody needs preferences to get email: an Identity Center user with no preferences is emailed at their identity store address. Use preferences to choose other channels, mute kinds of notification, or reach an IAM principal. `scripts/preferences.ts` edits them, reading the table and secret prefix from the stack's outputs:
 
 ```bash
-# Alex wants failures in Slack as well as email, but not the per-task ones.
-npm run preferences -- set user:alex --channels EMAIL,SLACK --mute TASK_FAILED
-
-# Store Alex's Slack webhook. The URL is read from standard input, so it stays
-# out of your shell history.
+# Send Alex's notifications to Slack as well as email. The webhook URL is read
+# from standard input, so it stays out of your shell history, and SLACK is added
+# to Alex's channels.
 npm run preferences -- webhook user:alex SLACK
+
+# Alex doesn't want per-task failures.
+npm run preferences -- set user:alex --mute TASK_FAILED
 
 # Approvals for the Lighting Leads group also go to the team's channel.
 npm run preferences -- webhook group:"Lighting Leads" SLACK
-npm run preferences -- set group:"Lighting Leads" --channels SLACK
 
 # The render pipeline's role submits jobs too. Email its owners when they fail.
 npm run preferences -- set arn:aws:sts::111122223333:assumed-role/RenderPipeline/submitter \
