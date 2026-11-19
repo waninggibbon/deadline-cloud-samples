@@ -4,6 +4,8 @@
 // field. Nothing here logs a webhook URL or a full email address: webhook URLs
 // are bearer credentials, and email addresses are personal data.
 
+import { Console } from 'node:console';
+
 export type LogFields = Record<string, unknown>;
 
 export interface Logger {
@@ -12,8 +14,20 @@ export interface Logger {
   error(message: string, fields?: LogFields): void;
 }
 
+// Lambda prefixes everything written through the global console with a
+// timestamp and request ID, which stops CloudWatch Logs Insights from reading
+// the line as JSON. A console of our own writes the JSON as it is.
+const out = new Console({ stdout: process.stdout, stderr: process.stderr });
+
+let context: LogFields = {};
+
+/** Fields added to every line from now on, such as the invocation's request ID. */
+export function setLogContext(fields: LogFields): void {
+  context = fields;
+}
+
 function write(level: string, message: string, fields: LogFields = {}): void {
-  console.log(JSON.stringify({ level, message, ...fields }));
+  out.log(JSON.stringify({ level, message, ...context, ...fields }));
 }
 
 export const log: Logger = {

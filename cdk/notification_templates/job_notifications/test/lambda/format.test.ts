@@ -15,6 +15,7 @@ function notification(kind: NotificationKind, extra: Partial<Notification> = {})
   return {
     kind,
     eventId: 'event-1',
+    idempotencyKey: 'event:event-1',
     region: REGION,
     ids: IDS,
     link: LINK,

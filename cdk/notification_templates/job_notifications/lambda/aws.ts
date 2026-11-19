@@ -116,32 +116,35 @@ export class DeadlineJobDirectory implements JobDirectory {
 }
 
 export class IdentityStoreDirectory implements IdentityDirectory {
-  readonly configured: boolean;
+  /**
+   * A user, group, or store that does not exist, or that the function may not
+   * read, fails only the principals concerned rather than the whole event.
+   */
+  private static readonly PERMANENT = [
+    'ResourceNotFoundException',
+    'AccessDeniedException',
+    'ValidationException',
+  ];
   private readonly emails = new TtlCache<string | undefined>(CACHE_TTL_MS);
 
-  constructor(
-    private readonly client: IdentitystoreClient,
-    private readonly identityStoreId: string | undefined,
-  ) {
-    this.configured = identityStoreId !== undefined;
-  }
+  constructor(private readonly client: IdentitystoreClient) {}
 
-  userEmail(userId: string): Promise<string | undefined> {
-    return this.emails.get(userId, async () => {
+  userEmail(identityStoreId: string, userId: string): Promise<string | undefined> {
+    return this.emails.get(`${identityStoreId}/${userId}`, async () => {
       try {
         const user = await this.client.send(
-          new DescribeUserCommand({ IdentityStoreId: this.identityStoreId!, UserId: userId }),
+          new DescribeUserCommand({ IdentityStoreId: identityStoreId, UserId: userId }),
         );
         const emails = user.Emails ?? [];
         return (emails.find((email) => email.Primary) ?? emails[0])?.Value;
       } catch (error) {
-        if (errorName(error) === 'ResourceNotFoundException') return undefined;
-        throw error;
+        mapError(error, IdentityStoreDirectory.PERMANENT);
       }
     });
   }
 
   async groupMembers(
+    identityStoreId: string,
     groupId: string,
     limit: number,
   ): Promise<{ userIds: string[]; truncated: boolean }> {
@@ -151,7 +154,7 @@ export class IdentityStoreDirectory implements IdentityDirectory {
       do {
         const page = await this.client.send(
           new ListGroupMembershipsCommand({
-            IdentityStoreId: this.identityStoreId!,
+            IdentityStoreId: identityStoreId,
             GroupId: groupId,
             NextToken: nextToken,
             MaxResults: 100,
@@ -164,8 +167,7 @@ export class IdentityStoreDirectory implements IdentityDirectory {
         nextToken = page.NextToken;
       } while (nextToken && userIds.length <= limit);
     } catch (error) {
-      if (errorName(error) === 'ResourceNotFoundException') return { userIds: [], truncated: false };
-      throw error;
+      mapError(error, IdentityStoreDirectory.PERMANENT);
     }
     return { userIds: userIds.slice(0, limit), truncated: userIds.length > limit };
   }
@@ -350,7 +352,6 @@ export function createAwsDependencies(config: Config, log: Logger): Dependencies
     jobs: new DeadlineJobDirectory(deadline),
     identity: new IdentityStoreDirectory(
       new IdentitystoreClient({ region: config.identityStoreRegion }),
-      config.identityStoreId,
     ),
     preferences: new DynamoPreferencesStore(documents, config.preferencesTableName),
     ledger: new DynamoDeliveryLedger(

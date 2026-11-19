@@ -3,9 +3,11 @@
 // Turning principals into recipients, and recipients into destinations.
 
 import { planDeliveries } from '../../lambda/delivery';
+import { PermanentError } from '../../lambda/errors';
 import { resolveRecipients } from '../../lambda/recipients';
 import {
   ALEX,
+  IDENTITY_STORE_ID,
   LEADS_GROUP,
   PIPELINE_ROLE,
   ROBIN,
@@ -18,6 +20,7 @@ import {
 function resolve(deps: ReturnType<typeof fakes>, ...audience: Parameters<typeof resolveRecipients>[0]) {
   return resolveRecipients(audience, {
     identity: deps.identity,
+    identityStoreId: IDENTITY_STORE_ID,
     preferences: deps.preferences,
     maxGroupMembers: 100,
     log: deps.log,
@@ -73,6 +76,7 @@ describe('resolveRecipients', () => {
     const { recipients } = await resolveRecipients([{ type: 'GROUP', id: LEADS_GROUP }], {
       identity: deps.identity,
       preferences: deps.preferences,
+      identityStoreId: IDENTITY_STORE_ID,
       maxGroupMembers: 3,
       log: deps.log,
     });
@@ -91,13 +95,14 @@ describe('resolveRecipients', () => {
 
   test('without an identity store, uses only the email in preferences', async () => {
     const deps = fakes();
-    deps.identity.configured = false;
     deps.preferences.set(SAM, { email: 'sam.home@studio.example.com' });
-    const { recipients, unresolved } = await resolve(
-      deps,
-      { type: 'USER', id: ALEX },
-      { type: 'USER', id: SAM },
-      { type: 'GROUP', id: LEADS_GROUP },
+    const { recipients, unresolved } = await resolveRecipients(
+      [
+        { type: 'USER', id: ALEX },
+        { type: 'USER', id: SAM },
+        { type: 'GROUP', id: LEADS_GROUP },
+      ],
+      { identity: deps.identity, preferences: deps.preferences, maxGroupMembers: 100, log: deps.log },
     );
     expect(recipients.map((r) => [r.principalId, r.email])).toEqual([
       [ALEX, undefined],
@@ -105,6 +110,78 @@ describe('resolveRecipients', () => {
     ]);
     expect(unresolved.map((u) => u.reason)).toEqual(['IdentityStoreNotConfigured']);
     expect(deps.identity.lookups).toEqual([]);
+  });
+
+  test("without a configured identity store, uses the one the event names", async () => {
+    const deps = fakes();
+    const { recipients } = await resolveRecipients(
+      [{ type: 'GROUP', id: LEADS_GROUP, identityStoreId: 'd-9999999999' }],
+      { identity: deps.identity, preferences: deps.preferences, maxGroupMembers: 100, log: deps.log },
+    );
+    expect(recipients.map((r) => r.email)).toEqual([
+      'sam@studio.example.com',
+      'robin@studio.example.com',
+    ]);
+    expect(deps.identity.lookups).toEqual([
+      `d-9999999999/${LEADS_GROUP}`,
+      `d-9999999999/${SAM}`,
+      `d-9999999999/${ROBIN}`,
+    ]);
+  });
+
+  test('does not look up a principal in a store other than the configured one', async () => {
+    const deps = fakes();
+    const { recipients, unresolved } = await resolve(
+      deps,
+      { type: 'USER', id: ALEX, identityStoreId: 'd-9999999999' },
+      { type: 'GROUP', id: LEADS_GROUP, identityStoreId: 'd-9999999999' },
+    );
+    expect(recipients.map((r) => [r.principalId, r.email])).toEqual([[ALEX, undefined]]);
+    expect(unresolved.map((u) => u.reason)).toEqual(['IdentityStoreMismatch']);
+    expect(deps.identity.lookups).toEqual([]);
+  });
+
+  test('a store the function cannot read leaves only those principals unresolved', async () => {
+    const deps = fakes();
+    deps.identity.groupMembers = async () => {
+      throw new PermanentError('denied', 'AccessDeniedException');
+    };
+    const { recipients, unresolved } = await resolve(
+      deps,
+      { type: 'GROUP', id: LEADS_GROUP },
+      { type: 'USER', id: ALEX },
+    );
+    expect(recipients.map((r) => r.principalId)).toEqual([ALEX]);
+    expect(unresolved).toEqual([
+      { principal: { type: 'GROUP', id: LEADS_GROUP }, reason: 'AccessDeniedException' },
+    ]);
+  });
+
+  test('a transient identity store failure fails the whole event, for a retry', async () => {
+    const deps = fakes();
+    deps.identity.userEmail = async () => {
+      throw Object.assign(new Error('slow down'), { name: 'ThrottlingException' });
+    };
+    await expect(resolve(deps, { type: 'USER', id: ALEX })).rejects.toThrow('slow down');
+  });
+
+  test('never notifies an excluded principal, even through a group', async () => {
+    const deps = fakes();
+    const { recipients } = await resolveRecipients(
+      [
+        { type: 'USER', id: SAM },
+        { type: 'GROUP', id: LEADS_GROUP },
+      ],
+      {
+        identity: deps.identity,
+        identityStoreId: IDENTITY_STORE_ID,
+        preferences: deps.preferences,
+        maxGroupMembers: 100,
+        exclude: new Set([SAM]),
+        log: deps.log,
+      },
+    );
+    expect(recipients.map((r) => r.principalId)).toEqual([ROBIN]);
   });
 });
 

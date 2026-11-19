@@ -95,7 +95,7 @@ describe('job failure', () => {
     expect(summary.unresolved).toBe(1);
     expect(deps.log.entries).toContainEqual(
       expect.objectContaining({
-        message: 'Principal not notified',
+        message: 'Principal could not be resolved',
         fields: expect.objectContaining({
           principalId: PIPELINE_ROLE,
           reason: 'IamPrincipalWithoutPreferences',
@@ -268,7 +268,7 @@ describe('EventBridge redelivery', () => {
     // Claim the delivery as a concurrent invocation would, without finishing it.
     const event = jobFailedEvent('concurrent');
     await deps.ledger.claim(
-      deliveryKey(event.id, { channel: 'EMAIL', address: 'alex@studio.example.com' }),
+      deliveryKey(`event:${event.id}`, { channel: 'EMAIL', address: 'alex@studio.example.com' }),
       event.id,
       'EMAIL',
     );

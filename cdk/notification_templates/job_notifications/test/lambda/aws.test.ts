@@ -81,19 +81,29 @@ describe('IdentityStoreDirectory', () => {
         { Value: 'alex@studio.example.com', Primary: true },
       ],
     }));
-    const directory = new IdentityStoreDirectory(client, 'd-1234567890');
-    expect(await directory.userEmail(ALEX)).toBe('alex@studio.example.com');
-    expect(await directory.userEmail(ALEX)).toBe('alex@studio.example.com');
+    const directory = new IdentityStoreDirectory(client);
+    expect(await directory.userEmail('d-1234567890', ALEX)).toBe('alex@studio.example.com');
+    expect(await directory.userEmail('d-1234567890', ALEX)).toBe('alex@studio.example.com');
     expect(commands).toHaveLength(1);
     expect(commands[0].input).toEqual({ IdentityStoreId: 'd-1234567890', UserId: ALEX });
   });
 
-  test('returns nothing for an unknown user', async () => {
-    const { client } = stubClient<IdentitystoreClient>(() => {
-      throw serviceError('ResourceNotFoundException');
-    });
-    expect(await new IdentityStoreDirectory(client, 'd-1234567890').userEmail(ALEX)).toBeUndefined();
+  test('returns nothing for a user with no email address', async () => {
+    const { client } = stubClient<IdentitystoreClient>(() => ({ Emails: [] }));
+    expect(await new IdentityStoreDirectory(client).userEmail('d-1234567890', ALEX)).toBeUndefined();
   });
+
+  test.each(['ResourceNotFoundException', 'AccessDeniedException', 'ValidationException'])(
+    'maps %s to a permanent error',
+    async (name) => {
+      const { client } = stubClient<IdentitystoreClient>(() => {
+        throw serviceError(name);
+      });
+      const directory = new IdentityStoreDirectory(client);
+      await expect(directory.userEmail('d-0000000000', ALEX)).rejects.toThrow(PermanentError);
+      await expect(directory.groupMembers('d-0000000000', 'g', 5)).rejects.toThrow(PermanentError);
+    },
+  );
 
   test('pages through group memberships up to the limit', async () => {
     const pages = [
@@ -101,9 +111,12 @@ describe('IdentityStoreDirectory', () => {
       { GroupMemberships: [{ MemberId: { UserId: SAM } }, { MemberId: { UserId: 'third' } }] },
     ];
     const { client, commands } = stubClient<IdentitystoreClient>(() => pages.shift());
-    const members = await new IdentityStoreDirectory(client, 'd-1234567890').groupMembers('g', 2);
+    const members = await new IdentityStoreDirectory(client).groupMembers('d-1234567890', 'g', 2);
     expect(members).toEqual({ userIds: [ALEX, SAM], truncated: true });
     expect(commands.map((c) => c.input.NextToken)).toEqual([undefined, 'page-2']);
+    expect(commands[0].input).toEqual(
+      expect.objectContaining({ IdentityStoreId: 'd-1234567890', GroupId: 'g' }),
+    );
   });
 });
 

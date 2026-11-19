@@ -258,8 +258,9 @@ async function main(): Promise<void> {
         }),
       );
       console.log(
-        `Stored the ${channel} webhook for ${principalId} in ${name}. ` +
-          `Add ${channel} to its channels with: npm run preferences -- set ${principalArg} --channels ...`,
+        `Stored the ${channel} webhook for ${principalId} in ${name}. If ${channel} is not among ` +
+          `its channels yet, add it with: npm run preferences -- --stack ${values.stack} ` +
+          `set ${principalArg} --channels EMAIL,${channel}`,
       );
       return;
     }

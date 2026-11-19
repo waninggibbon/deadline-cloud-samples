@@ -54,11 +54,21 @@ export function composeMessage(notification: Notification): Message {
       linkText = 'Review in Deadline Cloud monitor';
       break;
     case 'APPROVAL_DECIDED':
-      subject = decision === 'REJECTED' ? 'Step rejected' : 'Step approved';
-      summary =
-        decision === 'REJECTED'
-          ? 'A step waiting for approval in an AWS Deadline Cloud job was rejected.'
-          : 'A step waiting for approval in an AWS Deadline Cloud job was approved.';
+      switch (decision) {
+        case 'REJECTED':
+          subject = 'Step rejected';
+          summary = 'A step waiting for approval in an AWS Deadline Cloud job was rejected.';
+          break;
+        case 'EXPIRED':
+          subject = 'Step approval expired';
+          summary =
+            'A step waiting for approval in an AWS Deadline Cloud job was not approved in time, ' +
+            'and its approval request expired.';
+          break;
+        default:
+          subject = 'Step approved';
+          summary = 'A step waiting for approval in an AWS Deadline Cloud job was approved.';
+      }
       break;
   }
 

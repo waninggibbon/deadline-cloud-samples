@@ -9,7 +9,7 @@ import { DeliveryLedger, DeliveryStatus, Transport, deliverAll, planDeliveries }
 import { isPermanent } from './errors';
 import { DeadlineEvent, Trigger, parseEvent, principalFromCreatedBy } from './events';
 import { composeMessage } from './format';
-import { monitorLink, validateIds } from './links';
+import { approvalLink, monitorLink, validateIds } from './links';
 import { Logger } from './log';
 import { IdentityDirectory, PreferencesStore, resolveRecipients } from './recipients';
 import { Notification, Principal, ResourceIds } from './types';
@@ -129,26 +129,42 @@ export async function handleEvent(
     throw error;
   }
 
+  const isApproval = trigger.kind === 'APPROVAL_REQUESTED' || trigger.kind === 'APPROVAL_DECIDED';
+  const decision = trigger.kind === 'APPROVAL_DECIDED' ? trigger.decision : undefined;
   const notification: Notification = {
     kind,
     eventId: event.id,
+    idempotencyKey: isApproval
+      ? `approval:${ids.approvalRequestId}:${kind}:${decision ?? 'WAITING'}`
+      : `event:${event.id}`,
     region: event.region,
     ids,
-    link: monitorLink(config.monitorUrl, event.region, ids),
+    link: isApproval
+      ? approvalLink(config.monitorUrl, event.region, ids, config.approvalLinkTarget)
+      : monitorLink(config.monitorUrl, event.region, ids),
     audience,
-    decision: trigger.kind === 'APPROVAL_DECIDED' ? trigger.decision : undefined,
+    decision,
     jobName,
     stepName,
   };
 
+  if (audience.length === 0) {
+    // A queue with no approvers configured: only IAM principals allowed to
+    // call ApproveStep can decide, and there is nobody to tell.
+    log.info('Event names nobody to notify', { ...base, kind, ...ids });
+  }
+
   const { recipients, unresolved } = await resolveRecipients(audience, {
     identity: deps.identity,
+    identityStoreId: config.identityStoreId,
     preferences: deps.preferences,
     maxGroupMembers: config.maxGroupMembers,
+    // Whoever recorded a decision already knows about it.
+    exclude: new Set(trigger.kind === 'APPROVAL_DECIDED' && trigger.decidedBy ? [trigger.decidedBy] : []),
     log,
   });
   for (const { principal, reason } of unresolved) {
-    log.warn('Principal not notified', {
+    log.warn('Principal could not be resolved', {
       ...base,
       principalType: principal.type,
       principalId: principal.id,
@@ -167,6 +183,7 @@ export async function handleEvent(
   const outcomes = emptyOutcomes();
   const results = await deliverAll(deliveries, {
     eventId: event.id,
+    idempotencyKey: notification.idempotencyKey,
     message: composeMessage(notification),
     ledger: deps.ledger,
     transport: deps.transport,
@@ -185,6 +202,7 @@ export async function handleEvent(
   log.info('Event processed', {
     ...summary,
     ...ids,
+    idempotencyKey: notification.idempotencyKey,
     audience: audience.map((principal) => `${principal.type}:${principal.id}`),
   });
   if (outcomes.RETRY > 0) {

@@ -22,6 +22,7 @@ export const JOB_ID = `job-${'3'.repeat(32)}`;
 export const STEP_ID = `step-${'4'.repeat(32)}`;
 export const TASK_ID = `task-${'4'.repeat(32)}-7`;
 export const MONITOR_URL = 'https://studio.us-west-2.deadlinecloud.amazonaws.com';
+export const IDENTITY_STORE_ID = 'd-1234567890';
 export const SECRET_PREFIX = `arn:aws:secretsmanager:${REGION}:${ACCOUNT}:secret:Notifications/webhooks/`;
 
 /** An Identity Center user ID, in the shape Deadline Cloud records in `createdBy`. */
@@ -40,11 +41,12 @@ export function config(overrides: Partial<Config> = {}): Config {
     preferencesTableName: 'Preferences',
     deliveryTableName: 'Deliveries',
     monitorUrl: MONITOR_URL,
-    identityStoreId: 'd-1234567890',
+    identityStoreId: IDENTITY_STORE_ID,
     identityStoreRegion: REGION,
     senderEmailAddress: 'render-notifications@studio.example.com',
     messageDetail: 'MINIMAL',
     notifyApproversOfDecision: false,
+    approvalLinkTarget: 'STEP_PAGE',
     webhookSecretArnPrefix: SECRET_PREFIX,
     claimTimeoutSeconds: 45,
     deliveryRecordTtlSeconds: 3 * 24 * 3600,
@@ -119,6 +121,69 @@ export function taskFailedEvent(id?: string): DeadlineEvent {
   );
 }
 
+export const APPROVAL_REQUEST_ID = `approvalrequest-${'5'.repeat(32)}`;
+
+export function approver(type: 'USER' | 'GROUP', id: string, identityStoreId = IDENTITY_STORE_ID) {
+  return { principalType: type, principalId: id, identityStoreId };
+}
+
+/** A `Step Approval Requested` event, in the shape of the contract's example. */
+export function approvalRequestedEvent(
+  approvers: unknown[],
+  overrides: Record<string, unknown> = {},
+  id?: string,
+): DeadlineEvent {
+  return deadlineEvent(
+    'Step Approval Requested',
+    {
+      farmId: FARM_ID,
+      queueId: QUEUE_ID,
+      jobId: JOB_ID,
+      stepId: STEP_ID,
+      approvalRequestId: APPROVAL_REQUEST_ID,
+      requestNumber: 1,
+      approvalStatus: 'WAITING',
+      approvalOnly: true,
+      requestedAt: '2026-11-19T10:00:00.000Z',
+      expiresAt: '2026-11-22T10:00:00.000Z',
+      jobCreatedBy: ALEX,
+      approvers,
+      ...overrides,
+    },
+    id,
+  );
+}
+
+/** A `Step Approval Decided` event, in the shape of the contract's example. */
+export function approvalDecidedEvent(
+  approvalStatus: 'APPROVED' | 'REJECTED' | 'EXPIRED',
+  approvers: unknown[],
+  overrides: Record<string, unknown> = {},
+  id?: string,
+): DeadlineEvent {
+  return deadlineEvent(
+    'Step Approval Decided',
+    {
+      farmId: FARM_ID,
+      queueId: QUEUE_ID,
+      jobId: JOB_ID,
+      stepId: STEP_ID,
+      approvalRequestId: APPROVAL_REQUEST_ID,
+      requestNumber: 1,
+      approvalOnly: true,
+      previousApprovalStatus: 'WAITING',
+      approvalStatus,
+      requestedAt: '2026-11-19T10:00:00.000Z',
+      decidedAt: '2026-11-19T11:00:00.000Z',
+      ...(approvalStatus === 'EXPIRED' ? {} : { decidedBy: SAM }),
+      jobCreatedBy: ALEX,
+      approvers,
+      ...overrides,
+    },
+    id,
+  );
+}
+
 export class FakeJobs implements JobDirectory {
   readonly getJobCalls: ResourceIds[] = [];
   readonly getStepCalls: ResourceIds[] = [];
@@ -149,16 +214,16 @@ export class FakeIdentity implements IdentityDirectory {
     [ROBIN, 'robin@studio.example.com'],
   ]);
   readonly groups = new Map<string, string[]>([[LEADS_GROUP, [SAM, ROBIN]]]);
+  /** Every lookup made, as `<identity store>/<user or group ID>`. */
   readonly lookups: string[] = [];
 
-  constructor(public configured = true) {}
-
-  async userEmail(userId: string): Promise<string | undefined> {
-    this.lookups.push(userId);
+  async userEmail(identityStoreId: string, userId: string): Promise<string | undefined> {
+    this.lookups.push(`${identityStoreId}/${userId}`);
     return this.emails.get(userId);
   }
 
-  async groupMembers(groupId: string, limit: number) {
+  async groupMembers(identityStoreId: string, groupId: string, limit: number) {
+    this.lookups.push(`${identityStoreId}/${groupId}`);
     const members = this.groups.get(groupId) ?? [];
     return { userIds: members.slice(0, limit), truncated: members.length > limit };
   }

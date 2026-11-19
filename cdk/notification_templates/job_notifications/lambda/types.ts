@@ -35,6 +35,11 @@ export type PrincipalType = 'USER' | 'GROUP' | 'IAM';
 export interface Principal {
   readonly type: PrincipalType;
   readonly id: string;
+  /**
+   * The Identity Center identity store a `USER` or `GROUP` belongs to, when the
+   * event names it. Step approval events carry it for every approver.
+   */
+  readonly identityStoreId?: string;
 }
 
 /** The Deadline Cloud resources a notification is about. */
@@ -44,20 +49,25 @@ export interface ResourceIds {
   readonly jobId: string;
   readonly stepId?: string;
   readonly taskId?: string;
+  /** The approval request a step approval event is about. */
+  readonly approvalRequestId?: string;
 }
 
-/** The outcome of a step approval. */
-export type ApprovalDecision = 'APPROVED' | 'REJECTED';
+/** How a step approval request was closed. */
+export type ApprovalDecision = 'APPROVED' | 'REJECTED' | 'EXPIRED';
 
 /** One notification, ready to be addressed and delivered. */
 export interface Notification {
   readonly kind: NotificationKind;
-  /**
-   * The ID of the EventBridge event this notification came from. EventBridge
-   * delivers at least once, so the same ID can arrive more than once; deliveries
-   * are made idempotent on it.
-   */
+  /** The ID of the EventBridge event this notification came from. */
   readonly eventId: string;
+  /**
+   * What makes two events the same notification. EventBridge delivers at least
+   * once, so deliveries are made idempotent on this key: the event ID for a
+   * failure, and the approval request and its status for an approval, since
+   * Deadline Cloud can publish an approval event again under a new event ID.
+   */
+  readonly idempotencyKey: string;
   readonly region: string;
   readonly ids: ResourceIds;
   /** The Deadline Cloud monitor page the message links to. */

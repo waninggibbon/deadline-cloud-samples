@@ -87,12 +87,12 @@ export function planDeliveries(
 }
 
 /**
- * The idempotency key for one delivery: the same EventBridge event to the same
+ * The idempotency key for one delivery: the same notification to the same
  * destination always maps to the same key. It is a hash so the delivery table
  * holds no email addresses.
  */
-export function deliveryKey(eventId: string, target: DeliveryTarget): string {
-  return createHash('sha256').update(`${eventId}\n${targetKey(target)}`).digest('hex');
+export function deliveryKey(idempotencyKey: string, target: DeliveryTarget): string {
+  return createHash('sha256').update(`${idempotencyKey}\n${targetKey(target)}`).digest('hex');
 }
 
 /**
@@ -131,7 +131,10 @@ export interface DeliveryOutcome {
 }
 
 export interface DeliverOptions {
+  /** The EventBridge event being delivered, for the delivery record and logs. */
   readonly eventId: string;
+  /** What makes two events the same notification; see `Notification.idempotencyKey`. */
+  readonly idempotencyKey: string;
   readonly message: Message;
   readonly ledger: DeliveryLedger;
   readonly transport: Transport;
@@ -156,7 +159,7 @@ async function deliverOne(
   options: DeliverOptions,
 ): Promise<DeliveryOutcome> {
   const { target } = delivery;
-  const key = deliveryKey(options.eventId, target);
+  const key = deliveryKey(options.idempotencyKey, target);
   const logFields = {
     eventId: options.eventId,
     principalId: delivery.principalId,

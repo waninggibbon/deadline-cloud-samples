@@ -4,6 +4,8 @@
 // stack sets. Every value here comes from a stack parameter or prop, so see
 // lib/job-notifications-stack.ts for what each one means.
 
+import { ApprovalLinkTarget } from './links';
+
 export type MessageDetail = 'MINIMAL' | 'NAMES';
 
 export interface Config {
@@ -18,6 +20,7 @@ export interface Config {
   readonly senderEmailAddress?: string;
   readonly messageDetail: MessageDetail;
   readonly notifyApproversOfDecision: boolean;
+  readonly approvalLinkTarget: ApprovalLinkTarget;
   /**
    * The ARN prefix every webhook secret must start with. The function's IAM
    * policy enforces the same prefix; checking it here as well gives a clear log
@@ -55,12 +58,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return {
     preferencesTableName: required(env, 'PREFERENCES_TABLE_NAME'),
     deliveryTableName: required(env, 'DELIVERY_TABLE_NAME'),
-    monitorUrl: required(env, 'MONITOR_URL').replace(/\/+$/, ''),
+    monitorUrl: required(env, 'MONITOR_BASE_URL').replace(/\/+$/, ''),
     identityStoreId: optional(env.IDENTITY_STORE_ID),
     identityStoreRegion: optional(env.IDENTITY_STORE_REGION) ?? region,
     senderEmailAddress: optional(env.SENDER_EMAIL_ADDRESS),
     messageDetail: env.MESSAGE_DETAIL === 'NAMES' ? 'NAMES' : 'MINIMAL',
     notifyApproversOfDecision: env.NOTIFY_APPROVERS_OF_DECISION === 'true',
+    approvalLinkTarget: env.APPROVAL_LINK_TARGET === 'APPROVAL_PAGE' ? 'APPROVAL_PAGE' : 'STEP_PAGE',
     webhookSecretArnPrefix: required(env, 'WEBHOOK_SECRET_ARN_PREFIX'),
     deadlineEndpointUrl: optional(env.DEADLINE_ENDPOINT_URL),
     claimTimeoutSeconds: Number(env.CLAIM_TIMEOUT_SECONDS ?? '90'),

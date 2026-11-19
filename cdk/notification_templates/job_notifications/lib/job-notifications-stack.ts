@@ -15,7 +15,7 @@ import * as logs from 'aws-cdk-lib/aws-logs';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
 
-import { DETAIL_TYPES } from '../lambda/events';
+import { DETAIL_TYPES } from '../lambda/fields';
 
 /** The level failures are reported at, chosen with the `FailureNotificationLevel` parameter. */
 export const FAILURE_LEVELS = ['JOB', 'STEP', 'TASK', 'NONE'] as const;
@@ -91,8 +91,9 @@ export class JobNotificationsStack extends cdk.Stack {
       type: 'String',
       default: '',
       description:
-        'The ID of the IAM Identity Center identity store your monitor uses, such as d-1234567890. ' +
-        'It is used to look up email addresses and group members. Leave empty to rely on preferences only.',
+        'The ID of the IAM Identity Center identity store your monitor uses, such as d-1234567890, for looking up ' +
+        "email addresses and group members. Leave empty to use the store each approval event names, and only " +
+        "preferences for a failed job's submitter.",
       allowedPattern: '^(d-[0-9a-f]{10}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$',
     });
     const identityStoreRegion = new cdk.CfnParameter(this, 'IdentityStoreRegion', {
@@ -126,6 +127,14 @@ export class JobNotificationsStack extends cdk.Stack {
         'MINIMAL messages say what happened and link to monitor. NAMES also includes the job and step names, ' +
         'which may be confidential.',
     });
+    const approvalLinkTarget = new cdk.CfnParameter(this, 'ApprovalLinkTarget', {
+      type: 'String',
+      default: 'STEP_PAGE',
+      allowedValues: ['STEP_PAGE', 'APPROVAL_PAGE'],
+      description:
+        "STEP_PAGE links approval messages to the step on monitor's queue page. APPROVAL_PAGE links to " +
+        "monitor's approval review page, for a monitor version that has one.",
+    });
     const notifyApprovers = new cdk.CfnParameter(this, 'NotifyApproversOfDecision', {
       type: 'String',
       default: 'false',
@@ -151,7 +160,7 @@ export class JobNotificationsStack extends cdk.Stack {
           },
           {
             Label: { default: 'What is notified' },
-            Parameters: [failureLevel.logicalId, messageDetail.logicalId],
+            Parameters: [failureLevel.logicalId, messageDetail.logicalId, approvalLinkTarget.logicalId],
           },
         ],
       },
@@ -219,12 +228,13 @@ export class JobNotificationsStack extends cdk.Stack {
         NODE_OPTIONS: '--enable-source-maps',
         PREFERENCES_TABLE_NAME: this.preferencesTable.tableName,
         DELIVERY_TABLE_NAME: this.deliveryTable.tableName,
-        MONITOR_URL: monitorUrl.valueAsString,
+        MONITOR_BASE_URL: monitorUrl.valueAsString,
         IDENTITY_STORE_ID: identityStoreId.valueAsString,
         IDENTITY_STORE_REGION: identityStoreRegion.valueAsString,
         SENDER_EMAIL_ADDRESS: senderEmailAddress.valueAsString,
         MESSAGE_DETAIL: messageDetail.valueAsString,
         NOTIFY_APPROVERS_OF_DECISION: notifyApprovers.valueAsString,
+        APPROVAL_LINK_TARGET: approvalLinkTarget.valueAsString,
         WEBHOOK_SECRET_ARN_PREFIX: this.formatArn({
           service: 'secretsmanager',
           resource: 'secret',
@@ -260,6 +270,12 @@ export class JobNotificationsStack extends cdk.Stack {
       }),
     );
 
+    // With an IdentityStoreId, only that store. Without one, whichever store an
+    // approval event names, which in practice is the account's one Identity
+    // Center instance.
+    const hasIdentityStoreId = new cdk.CfnCondition(this, 'HasIdentityStoreId', {
+      expression: cdk.Fn.conditionNot(cdk.Fn.conditionEquals(identityStoreId.valueAsString, '')),
+    });
     this.function.addToRolePolicy(
       new iam.PolicyStatement({
         sid: 'ResolveIdentityCenterPrincipals',
@@ -271,7 +287,11 @@ export class JobNotificationsStack extends cdk.Stack {
             region: '',
             account: this.account,
             resource: 'identitystore',
-            resourceName: identityStoreId.valueAsString,
+            resourceName: cdk.Fn.conditionIf(
+              hasIdentityStoreId.logicalId,
+              identityStoreId.valueAsString,
+              '*',
+            ).toString(),
           }),
           ...['user/*', 'group/*', 'membership/*'].map((resource) =>
             cdk.Arn.format({

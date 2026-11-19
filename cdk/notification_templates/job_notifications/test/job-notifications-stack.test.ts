@@ -223,7 +223,19 @@ describe('function permissions', () => {
       'identitystore:DescribeUser',
       'identitystore:ListGroupMemberships',
     ]);
-    expect(JSON.stringify(identity.Resource)).toContain('{"Ref":"IdentityStoreId"}');
+    const resources = JSON.stringify(identity.Resource);
+    expect(resources).toContain('{"Fn::If":["HasIdentityStoreId",{"Ref":"IdentityStoreId"},"*"]}');
+    expect(resources).toContain(':::user/*');
+    expect(template.toJSON().Conditions.HasIdentityStoreId).toEqual({
+      'Fn::Not': [{ 'Fn::Equals': [{ Ref: 'IdentityStoreId' }, ''] }],
+    });
+  });
+
+  test('link approvals to the step page unless told the approval page exists', () => {
+    template.hasParameter('ApprovalLinkTarget', {
+      Default: 'STEP_PAGE',
+      AllowedValues: ['STEP_PAGE', 'APPROVAL_PAGE'],
+    });
   });
 });
 
@@ -239,7 +251,8 @@ describe('function configuration', () => {
     expect(template.toJSON().Parameters.MonitorUrl.Default).toBeUndefined();
     expect(environment(template)).toEqual(
       expect.objectContaining({
-        MONITOR_URL: { Ref: 'MonitorUrl' },
+        MONITOR_BASE_URL: { Ref: 'MonitorUrl' },
+        APPROVAL_LINK_TARGET: { Ref: 'ApprovalLinkTarget' },
         IDENTITY_STORE_ID: { Ref: 'IdentityStoreId' },
         SENDER_EMAIL_ADDRESS: { Ref: 'SenderEmailAddress' },
         MESSAGE_DETAIL: { Ref: 'MessageDetail' },
